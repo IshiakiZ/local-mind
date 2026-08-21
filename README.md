@@ -14,6 +14,38 @@ always behind an explicit confirmation.
 
 ---
 
+## Install
+
+Two commands. Copy each with the button on the right of the block.
+
+**1 — install Ollama and the local model** (~5.2 GB download)
+
+```bash
+brew install ollama && brew services start ollama && ollama pull qwen3:8b
+```
+
+**2 — build Local Mind**
+
+```bash
+git clone https://github.com/IshiakiZ/local-mind.git && cd local-mind && ./build.sh
+```
+
+Then move it into place:
+
+```bash
+cp -R LocalMind.app /Applications/
+```
+
+> **Build it yourself — don't copy someone else's `LocalMind.app`.** A prebuilt bundle carries the
+> builder's code signature, which your Mac doesn't trust, so macOS will refuse to open it.
+> Building locally signs it for your own machine.
+
+> **Check first:** this needs an **Apple Silicon Mac**, **macOS 26 (Tahoe) or newer**, and
+> **Apple Intelligence enabled**. It cannot run otherwise — the on-device model doesn't exist on
+> older systems. Full requirements below.
+
+---
+
 ## Requirements
 
 Local Mind will not run without all of these:
@@ -25,36 +57,6 @@ Local Mind will not run without all of these:
 | **Apple Intelligence enabled** | Otherwise the on-device model reports unavailable |
 | **Xcode Command Line Tools** | To build. `xcode-select --install` |
 | **Ollama + qwen3:8b** | The second council member (~5.2 GB download) |
-
----
-
-## Install
-
-**1. Install Ollama and the model**
-
-```bash
-brew install ollama
-brew services start ollama
-ollama pull qwen3:8b
-```
-
-**2. Build the app**
-
-```bash
-git clone https://github.com/IshiakiZ/local-mind.git
-cd local-mind
-./build.sh
-```
-
-That produces `LocalMind.app`. Move it wherever you like:
-
-```bash
-cp -R LocalMind.app /Applications/
-```
-
-**Build it yourself — don't copy someone else's `.app`.** A prebuilt bundle is signed with the
-builder's certificate, which your Mac doesn't trust, so macOS will refuse to open it. Building
-locally signs it for your machine and avoids the problem entirely.
 
 ---
 
