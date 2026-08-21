@@ -1,0 +1,15 @@
+# Built app bundle — rebuilt by ./build.sh
+LocalMind.app/
+*.app/
+
+# Working backups from development
+.backup-*/
+
+# macOS cruft
+.DS_Store
+._*
+
+# Build intermediates
+*.o
+*.swiftmodule
+/bin
