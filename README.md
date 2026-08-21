@@ -16,7 +16,20 @@ always behind an explicit confirmation.
 
 ## Install
 
-Two commands. Copy each with the button on the right of the block.
+Copy each block with the button on its right, and run them in Terminal in order.
+
+**0 — install Homebrew** (skip if you already have it: `brew --version` prints a version)
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+On Apple Silicon the installer does **not** put `brew` on your PATH. Run this once afterwards,
+or every following command will say `brew: command not found`:
+
+```bash
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile && eval "$(/opt/homebrew/bin/brew shellenv)"
+```
 
 **1 — install Ollama and the local model** (~5.2 GB download)
 
