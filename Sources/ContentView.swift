@@ -57,7 +57,13 @@ struct ContentView: View {
         // traffic lights inside the 52pt header, which is what the 78pt
         // leading inset exists to clear. VERIFIED on screen.
         .ignoresSafeArea(.container, edges: .top)
-        .onAppear { inputFocused = true }
+        .onAppear {
+            inputFocused = true
+            installPasteMonitor()
+        }
+        .onDisappear {
+            if let m = pasteMonitor { NSEvent.removeMonitor(m); pasteMonitor = nil }
+        }
     }
 
     // MARK: Header
@@ -144,6 +150,47 @@ struct ContentView: View {
         }
         .shadow(color: T.castHard, radius: scrolled ? 14 : 7, y: scrolled ? 5 : 2)
         .animation(M.hairline, value: scrolled)
+    }
+
+    @State private var pasteMonitor: Any? = nil
+
+    /// SwiftUI's `.onPasteCommand` never fires while the text field holds focus —
+    /// the field consumes ⌘V first. Intercepting the key event is the only
+    /// reliable route. Text paste is left completely alone: the event is only
+    /// swallowed when the clipboard genuinely contains a picture.
+    private func installPasteMonitor() {
+        guard pasteMonitor == nil else { return }
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard mods == .command,
+                  event.charactersIgnoringModifiers?.lowercased() == "v"
+            else { return event }
+            // Keep NSEvent out of the isolation boundary — it isn't Sendable.
+            var handled = false
+            MainActor.assumeIsolated { handled = pasteImageFromClipboard() }
+            return handled ? nil : event
+        }
+    }
+
+    /// ⌘V with a picture on the clipboard. Text paste is untouched: this only
+    /// fires for image/file types, so the text field still handles plain text.
+    @discardableResult
+    private func pasteImageFromClipboard() -> Bool {
+        let pb = NSPasteboard.general
+        // Plain text on the clipboard must fall through to the text field.
+        if pb.canReadObject(forClasses: [NSString.self], options: nil),
+           !pb.canReadObject(forClasses: [NSImage.self], options: nil) { return false }
+        if let imgs = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+           let img = imgs.first {
+            brain.ingest(image: img, label: "pasted image")
+            return true
+        }
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+           let u = urls.first {
+            brain.ingest(u)
+            return true
+        }
+        return false
     }
 
     private var canSave: Bool { ChatArchive.hasContent(brain.messages) }
@@ -666,9 +713,28 @@ struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
         case .user:
-            HStack {
+            HStack(alignment: .top) {
                 Spacer(minLength: 60)
-                Text(msg.text)
+                VStack(alignment: .trailing, spacing: 7) {
+                    // Thumbnail of a dropped or pasted picture, so the
+                    // transcript shows what was actually handed over.
+                    if let cg = msg.image {
+                        Image(decorative: cg, scale: 1)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: 260, maxHeight: 190)
+                            .clipShape(RoundedRectangle(cornerRadius: R.code, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: R.code, style: .continuous)
+                                .strokeBorder(T.hair, lineWidth: 0.75))
+                            .shadow(color: T.castSoft, radius: 5, y: 2)
+                    }
+                    if !msg.text.isEmpty {
+                        Text(msg.text)
+                    // Text lifted out of a picture is shown only as a short
+                    // proof-of-read; the thumbnail above already carries it,
+                    // and the model still receives the full text.
+                    .lineLimit(msg.image == nil ? nil : 4)
+                    .truncationMode(.tail)
                     .font(.system(size: 13, weight: .medium))
                     .lineSpacing(2.5)
                     .foregroundStyle(AccentInk.onAccent)
@@ -689,6 +755,8 @@ struct MessageRow: View {
                     .shadow(color: T.castSoft, radius: 3, y: 1)
                     .frame(maxWidth: 480, alignment: .trailing)
                     .id(accentTick)
+                    }
+                }
             }
 
         case .assistant:

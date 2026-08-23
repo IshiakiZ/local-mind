@@ -8,6 +8,10 @@ It routes each question to whichever of two local models handles it best:
 - **Apple's on-device Foundation Model** — built into macOS 26, instant, great at condensing text
 - **Qwen3-8B** — running locally via Ollama, better at reasoning, code and factual questions
 
+**Paste or drop in a picture** (⌘V) and Vision reads it on-device — text via OCR, or a rough
+identification of the contents when there's no text. Note that neither model can actually *see*
+images: both are text-only, so what reaches them is Vision's output, not the picture.
+
 It can also **read your screen** through the macOS Accessibility API to answer things like
 "where is the Save button" or "what does this error say", and propose actions like opening an app —
 always behind an explicit confirmation.

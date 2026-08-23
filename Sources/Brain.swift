@@ -18,6 +18,7 @@ struct Msg: Identifiable {
     var routing: Bool = false      // still deciding who answers
     var action: PendingAction? = nil   // .confirm rows only
     var resolved: Bool = false         // confirm row has been run or cancelled
+    var image: CGImage? = nil          // thumbnail of a dropped/pasted picture
 }
 
 @MainActor
@@ -364,44 +365,99 @@ final class Brain: ObservableObject {
 
     // MARK: - Vision OCR
 
+    // MARK: - Images (drag-drop and paste share this path)
+
+    static func cgImage(from image: NSImage) -> CGImage? {
+        guard let tiff = image.tiffRepresentation,
+              let bmp = NSBitmapImageRep(data: tiff) else { return nil }
+        return bmp.cgImage
+    }
+
     func ingest(_ url: URL) {
+        guard let img = NSImage(contentsOf: url), let cg = Self.cgImage(from: img) else {
+            messages.append(Msg(role: .note, text: "Couldn't read that file as an image."))
+            return
+        }
+        ingest(cg: cg, label: url.lastPathComponent)
+    }
+
+    func ingest(image: NSImage, label: String) {
+        guard let cg = Self.cgImage(from: image) else {
+            messages.append(Msg(role: .note, text: "Couldn't read that as an image."))
+            return
+        }
+        ingest(cg: cg, label: label)
+    }
+
+    /// Vision reads the picture on-device. Neither model can actually SEE it —
+    /// they are both text-only — so Vision's output is what reaches them.
+    func ingest(cg: CGImage, label: String) {
         Task { [weak self] in
             guard let self else { return }
-            guard let img = NSImage(contentsOf: url),
-                  let tiff = img.tiffRepresentation,
-                  let bmp = NSBitmapImageRep(data: tiff),
-                  let cg = bmp.cgImage else {
-                self.messages.append(Msg(role: .note, text: "Couldn't read that file as an image."))
-                return
-            }
-            // Addressed by id, not by "last row": the OCR await can outlive a
+            // Addressed by id, not by "last row": the Vision await can outlive a
             // reset, and rewriting position `count - 1` would either clobber an
             // unrelated row or index an empty transcript.
-            let note = Msg(role: .note, text: "Reading “\(url.lastPathComponent)” with Vision…")
+            let note = Msg(role: .note, text: "Reading “\(label)” with Vision…")
             self.messages.append(note)
             let nid = note.id
             let started = Date()
+
+            var lines: [String] = []
             do {
                 var req = RecognizeTextRequest()
                 req.recognitionLevel = .accurate
                 let obs = try await req.perform(on: cg)
-                let found = obs.compactMap { $0.topCandidates(1).first?.string }
-                guard !found.isEmpty else {
-                    self.write(nid) { $0.text = "No text found in that image." }
-                    return
-                }
-                let body = found.joined(separator: "\n")
-                guard self.slot(nid) != nil else { return }
+                lines = obs.compactMap { $0.topCandidates(1).first?.string }
+            } catch {
+                self.write(nid) { $0.text = "Vision failed: \(error.localizedDescription)" }
+                return
+            }
+
+            guard self.slot(nid) != nil else { return }
+
+            if !lines.isEmpty {
+                let body = lines.joined(separator: "\n")
                 self.write(nid) {
-                    $0.text = "Vision read \(found.count) line\(found.count == 1 ? "" : "s") from “\(url.lastPathComponent)” on-device."
+                    $0.text = "Vision read \(lines.count) line\(lines.count == 1 ? "" : "s") from “\(label)” on-device."
                     $0.elapsed = Date().timeIntervalSince(started)
                 }
-                self.messages.append(Msg(role: .user, text: body))
+                self.messages.append(Msg(role: .user, text: body, image: cg))
                 self.isThinking = false
                 self.dispatch("Summarize this text in a couple of sentences:\n\n\(body)")
-            } catch {
-                self.messages.append(Msg(role: .note, text: "Vision failed: \(error.localizedDescription)"))
+                return
             }
+
+            // No text: fall back to on-device image classification so a photo
+            // still produces something useful.
+            var labels: [String] = []
+            if let obs = try? await ClassifyImageRequest().perform(on: cg) {
+                labels = obs.filter { $0.confidence > 0.12 }
+                            .prefix(6)
+                            .map { $0.identifier.replacingOccurrences(of: "_", with: " ") }
+            }
+            guard self.slot(nid) != nil else { return }
+
+            guard !labels.isEmpty else {
+                self.write(nid) {
+                    $0.text = "No text in “\(label)”, and Vision couldn't identify it either."
+                    $0.elapsed = Date().timeIntervalSince(started)
+                }
+                self.messages.append(Msg(role: .user, text: "", image: cg))
+                return
+            }
+
+            let list = labels.joined(separator: ", ")
+            self.write(nid) {
+                $0.text = "No text in “\(label)”. Vision identified it on-device as: \(list)."
+                $0.elapsed = Date().timeIntervalSince(started)
+            }
+            self.messages.append(Msg(role: .user, text: "", image: cg))
+            self.isThinking = false
+            self.dispatch("""
+            I shared a picture. I cannot show it to you and you cannot see it, but Apple's Vision \
+            framework identified it on this Mac as: \(list). Say briefly what it sounds like the \
+            picture shows, and make clear you are going on those labels rather than seeing it.
+            """)
         }
     }
 
