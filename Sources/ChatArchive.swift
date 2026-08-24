@@ -6,6 +6,21 @@ import AppKit
 /// folder, and no background persistence anywhere in this app.
 enum ChatArchive {
 
+    /// What actually round-trips. Thumbnails are deliberately not stored: they
+    /// would bloat the file enormously for something the transcript already
+    /// describes in words.
+    private struct Stored: Codable {
+        var role: String
+        var text: String
+        var elapsed: Double?
+        var member: String?
+        var category: String?
+        var viaRule: Bool
+    }
+
+    private static let marker = "localmind-transcript-v1"
+
+
     /// Render a transcript as Markdown, preserving who answered and how long it took.
     static func markdown(_ messages: [Msg], exported: Date = Date()) -> String {
         let stamp = DateFormatter()
@@ -38,7 +53,61 @@ enum ChatArchive {
                 }
             }
         }
+        // Machine-readable payload so the file can be reopened. It lives in an
+        // HTML comment, so it is invisible in any Markdown renderer.
+        let stored = messages.compactMap { m -> Stored? in
+            switch m.role {
+            case .user, .assistant, .note:
+                return Stored(role: String(describing: m.role), text: m.text,
+                              elapsed: m.elapsed,
+                              member: m.member.map { String(describing: $0) },
+                              category: m.category.map { $0.rawValue },
+                              viaRule: m.viaRule)
+            case .confirm:
+                return nil
+            }
+        }
+        if let data = try? JSONEncoder().encode(stored),
+           let json = String(data: data, encoding: .utf8) {
+            out += "\n<!-- \(marker) \(json) -->\n"
+        }
         return out
+    }
+
+    /// Rebuild a transcript from a file this app wrote.
+    static func parse(_ text: String) -> [Msg]? {
+        guard let r = text.range(of: "<!-- \(marker) ") else { return nil }
+        let rest = text[r.upperBound...]
+        guard let end = rest.range(of: " -->") else { return nil }
+        let json = String(rest[..<end.lowerBound])
+        guard let data = json.data(using: .utf8),
+              let stored = try? JSONDecoder().decode([Stored].self, from: data) else { return nil }
+        return stored.map { st in
+            let role: Role = st.role == "user" ? .user : (st.role == "assistant" ? .assistant : .note)
+            return Msg(role: role, text: st.text, elapsed: st.elapsed,
+                       member: st.member == "qwen" ? .qwen : (st.member == "apple" ? .apple : nil),
+                       category: st.category.flatMap(Category.init(rawValue:)),
+                       viaRule: st.viaRule)
+        }
+    }
+
+    /// Ask for a saved conversation and hand back its messages.
+    @MainActor
+    static func presentOpenPanel() -> (messages: [Msg], status: String)? {
+        let panel = NSOpenPanel()
+        panel.title = "Open a saved conversation"
+        panel.prompt = "Open"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.init(filenameExtension: "md")].compactMap { $0 }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return ([], "Couldn't read that file.")
+        }
+        guard let msgs = parse(text) else {
+            return ([], "That file wasn't saved by Local Mind, so it can't be reopened.")
+        }
+        return (msgs, "Reopened \(url.lastPathComponent) — \(msgs.count) rows. Images aren't stored in saved files.")
     }
 
     /// Suggest a filename from the first thing the user actually asked.

@@ -19,16 +19,45 @@ struct Msg: Identifiable {
     var action: PendingAction? = nil   // .confirm rows only
     var resolved: Bool = false         // confirm row has been run or cancelled
     var image: CGImage? = nil          // thumbnail of a dropped/pasted picture
+    var permission: ScreenPermissions? = nil   // note rows that are really a permission prompt
+    var needsCapture: Bool = false
+}
+
+/// A picture waiting to be sent, already read by Vision. Held until the user
+/// sends, so they can attach a question instead of getting an auto-summary.
+struct Attachment: Identifiable {
+    let id = UUID()
+    let image: CGImage
+    let label: String
+    let extractedText: String
+    let visionLabels: [String]
+    var hasText: Bool { !extractedText.isEmpty }
+}
+
+enum Defaults {
+    static func bool(_ key: String, _ fallback: Bool) -> Bool {
+        UserDefaults.standard.object(forKey: key) as? Bool ?? fallback
+    }
+    static func set(_ key: String, _ value: Bool) {
+        UserDefaults.standard.set(value, forKey: key)
+    }
 }
 
 @MainActor
 final class Brain: ObservableObject {
+    @Published var attachment: Attachment? = nil
     @Published var messages: [Msg] = []
     @Published var isThinking = false
     @Published var modelReady = false
     @Published var qwenReady = false
-    @Published var speakReplies = false
-    @Published var councilEnabled = true
+    // Preferences survive relaunch. Deliberately UserDefaults and nothing else:
+    // conversations themselves are still never persisted without an explicit Save.
+    @Published var speakReplies = Defaults.bool("speakReplies", false) {
+        didSet { Defaults.set("speakReplies", speakReplies) }
+    }
+    @Published var councilEnabled = Defaults.bool("councilEnabled", true) {
+        didSet { Defaults.set("councilEnabled", councilEnabled) }
+    }
     @Published var perms = ScreenPermissions.current()
     @Published var screenEnabled = true
 
@@ -38,6 +67,8 @@ final class Brain: ObservableObject {
     // Streamed text is flushed to @Published state at most every 50ms.
     // MarkdownText re-parses on every body evaluation, so an un-throttled
     // 600-token answer would run the block parser 600 times.
+    private var streamTask: Task<Void, Never>? = nil
+    private var streamingRow: UUID? = nil
     private var streamBuf = ""
     private var lastFlush = Date.distantPast
 
@@ -87,10 +118,62 @@ final class Brain: ObservableObject {
 
     func send(_ prompt: String) {
         let clean = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, !isThinking else { return }
+        guard !isThinking else { return }
+
+        // An attached picture can carry the user's own question instead of
+        // being auto-summarised.
+        if let att = attachment {
+            attachment = nil
+            messages.append(Msg(role: .user, text: clean, image: att.image))
+            dispatch(promptFor(att, question: clean))
+            return
+        }
+
+        guard !clean.isEmpty else { return }
         messages.append(Msg(role: .user, text: clean))
         if let intent = screenPath(clean) { dispatchScreen(clean, intent: intent) }
         else { dispatch(clean) }
+    }
+
+    /// Replace the transcript with a reopened conversation. The model sessions
+    /// are reset too, so the models don't answer as if they had said any of it.
+    func load(_ msgs: [Msg]) {
+        stop()
+        attachment = nil
+        session = LanguageModelSession(instructions: Self.persona)
+        messages = msgs
+    }
+
+    func clearAttachment() { attachment = nil }
+
+    /// Neither model can see pictures, so what they receive is Vision's reading
+    /// of it. The prompt says so explicitly rather than pretending otherwise.
+    private func promptFor(_ att: Attachment, question: String) -> String {
+        let ask = question.isEmpty ? "Summarise this in a couple of sentences." : question
+        if att.hasText {
+            return """
+            Text read out of an image by on-device OCR:
+
+            \(att.extractedText)
+
+            \(ask)
+            """
+        }
+        if !att.visionLabels.isEmpty {
+            return """
+            I shared a picture. You cannot see it — Apple's Vision framework identified it on this \
+            Mac as: \(att.visionLabels.joined(separator: ", ")). Answer from those labels and make \
+            clear you are going on them rather than seeing the picture.
+
+            \(ask)
+            """
+        }
+        return """
+        I shared a picture, but on-device Vision found no text in it and could not identify it. \
+        Say so plainly rather than guessing.
+
+        \(ask)
+        """
     }
 
     // MARK: - Screen capability
@@ -113,8 +196,10 @@ final class Brain: ObservableObject {
             // then deep-link to the pane, which works every time.
             AX.requestTrust()
             AX.openAccessibilitySettings()
-            messages.append(Msg(role: .note, text:
-                "I need Accessibility permission to read the screen. I've opened System Settings › Privacy & Security › Accessibility — switch on “Local Mind” there (use + and pick it from /Applications if it isn't listed), then quit and reopen Local Mind. You only have to do this once."))
+            messages.append(Msg(role: .note,
+                                text: "Local Mind needs Accessibility permission to read the screen.",
+                                permission: perms,
+                                needsCapture: false))
             isThinking = false
             return
         }
@@ -270,7 +355,7 @@ final class Brain: ObservableObject {
         messages.append(row)
         let rid = row.id
 
-        Task { [weak self] in
+        streamTask = Task { [weak self] in
             guard let self else { return }
 
             // 1. Council decides
@@ -301,10 +386,46 @@ final class Brain: ObservableObject {
             case .apple: await self.answerApple(prompt, into: rid)
             case .qwen:  await self.answerQwen(prompt, into: rid)
             }
+            if Task.isCancelled { return }
             self.write(rid) { $0.elapsed = Date().timeIntervalSince(started) }
             self.isThinking = false
+            self.streamTask = nil
             if self.speakReplies, let i = self.slot(rid) { self.speak(self.messages[i].text) }
         }
+    }
+
+    /// Stop whatever is being generated right now, keeping what already arrived.
+    func stop() {
+        guard let t = streamTask else { return }
+        t.cancel()
+        streamTask = nil
+        if let id = streamingRow { flushStream(into: id) }
+        streamingRow = nil
+        isThinking = false
+    }
+
+    /// Conversation history for Ollama. `/api/generate` only ever saw the latest
+    /// prompt, so Qwen had no memory of anything said earlier while Apple's
+    /// model did — the same chat remembered or forgot depending on who answered.
+    private func qwenHistory(currentPrompt: String) -> [Ollama.Turn] {
+        var turns: [Ollama.Turn] = [.init(role: "system", content: Self.persona)]
+        // Keep the tail: enough for real follow-ups without an unbounded prompt.
+        let recent = messages.suffix(24)
+        for m in recent {
+            let body = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { continue }
+            switch m.role {
+            case .user:      turns.append(.init(role: "user", content: body))
+            case .assistant: turns.append(.init(role: "assistant", content: body))
+            case .note, .confirm: continue
+            }
+        }
+        // The row being written into is already in `messages` but still empty,
+        // so the live question has to be appended explicitly.
+        if turns.last?.content != currentPrompt {
+            turns.append(.init(role: "user", content: currentPrompt))
+        }
+        return turns
     }
 
     /// Ollama streams deltas: buffer them and flush on the 50ms gate.
@@ -328,6 +449,8 @@ final class Brain: ObservableObject {
     }
 
     private func answerApple(_ prompt: String, into id: UUID) async {
+        streamingRow = id
+        defer { streamingRow = nil }
         // Apple's model hands back whole snapshots rather than deltas, so the
         // same gate is applied to the assignment, with a final unconditional
         // write once the stream ends. The gate is local: it must not share
@@ -352,14 +475,23 @@ final class Brain: ObservableObject {
     private func answerQwen(_ prompt: String, into id: UUID) async {
         streamBuf = ""
         lastFlush = .distantPast
+        streamingRow = id
+        defer { streamingRow = nil }
+        let turns = qwenHistory(currentPrompt: prompt)
         do {
-            for try await piece in Ollama.streamSeq(prompt: prompt) {
+            for try await piece in Ollama.chatStream(turns) {
+                if Task.isCancelled { break }
                 appendStreamed(piece, into: id)
             }
             flushStream(into: id)
         } catch {
+            // Append rather than replace: a half-read answer is still worth
+            // keeping, and overwriting it loses everything the user just read.
             flushStream(into: id)
-            write(id) { $0.text = "Qwen failed: \(error.localizedDescription)" }
+            write(id) {
+                let sep = $0.text.isEmpty ? "" : "\n\n"
+                $0.text += "\(sep)_Qwen stopped early: \(error.localizedDescription)_"
+            }
         }
     }
 
@@ -418,12 +550,11 @@ final class Brain: ObservableObject {
             if !lines.isEmpty {
                 let body = lines.joined(separator: "\n")
                 self.write(nid) {
-                    $0.text = "Vision read \(lines.count) line\(lines.count == 1 ? "" : "s") from “\(label)” on-device."
+                    $0.text = "Vision read \(lines.count) line\(lines.count == 1 ? "" : "s") from “\(label)” on-device. Ask a question about it, or just press send."
                     $0.elapsed = Date().timeIntervalSince(started)
                 }
-                self.messages.append(Msg(role: .user, text: body, image: cg))
-                self.isThinking = false
-                self.dispatch("Summarize this text in a couple of sentences:\n\n\(body)")
+                self.attachment = Attachment(image: cg, label: label,
+                                             extractedText: body, visionLabels: [])
                 return
             }
 
@@ -442,22 +573,18 @@ final class Brain: ObservableObject {
                     $0.text = "No text in “\(label)”, and Vision couldn't identify it either."
                     $0.elapsed = Date().timeIntervalSince(started)
                 }
-                self.messages.append(Msg(role: .user, text: "", image: cg))
+                self.attachment = Attachment(image: cg, label: label,
+                                             extractedText: "", visionLabels: [])
                 return
             }
 
             let list = labels.joined(separator: ", ")
             self.write(nid) {
-                $0.text = "No text in “\(label)”. Vision identified it on-device as: \(list)."
+                $0.text = "No text in “\(label)”. Vision identified it on-device as: \(list). Ask a question about it, or just press send."
                 $0.elapsed = Date().timeIntervalSince(started)
             }
-            self.messages.append(Msg(role: .user, text: "", image: cg))
-            self.isThinking = false
-            self.dispatch("""
-            I shared a picture. I cannot show it to you and you cannot see it, but Apple's Vision \
-            framework identified it on this Mac as: \(list). Say briefly what it sounds like the \
-            picture shows, and make clear you are going on those labels rather than seeing it.
-            """)
+            self.attachment = Attachment(image: cg, label: label,
+                                         extractedText: "", visionLabels: labels)
         }
     }
 
@@ -475,6 +602,8 @@ final class Brain: ObservableObject {
     func stopSpeaking() { synth.stopSpeaking(at: .immediate) }
 
     func reset() {
+        stop()                     // otherwise isThinking stays true and Send is dead
+        attachment = nil
         session = LanguageModelSession(instructions: Self.persona)
         checkAvailability()
         Task { await refreshQwen() }

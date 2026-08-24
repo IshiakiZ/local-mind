@@ -23,7 +23,12 @@ struct LocalMindApp: App {
 struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let v = NSView(frame: .zero)
-        DispatchQueue.main.async { v.window?.isMovableByWindowBackground = true }
+        DispatchQueue.main.async {
+            guard let w = v.window else { return }
+            w.isMovableByWindowBackground = true
+            // Remember size and position between launches.
+            w.setFrameAutosaveName("LocalMindMain")
+        }
         return v
     }
     func updateNSView(_ v: NSView, context: Context) {}

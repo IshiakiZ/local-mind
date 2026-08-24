@@ -123,6 +123,50 @@ enum Ollama {
         return ((try? await URLSession.shared.data(for: r)) != nil)
     }
 
+    /// One turn of a conversation handed to Ollama.
+    struct Turn: Sendable {
+        let role: String        // "system" | "user" | "assistant"
+        let content: String
+    }
+
+    /// Streaming chat WITH history. `/api/generate` is stateless — it only ever
+    /// sees the latest prompt, which is why follow-up questions used to fail.
+    /// `/api/chat` takes the whole exchange.
+    static func chatStream(_ turns: [Turn]) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var req = URLRequest(url: base.appendingPathComponent("api/chat"))
+                    req.httpMethod = "POST"
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.timeoutInterval = 600
+                    req.httpBody = try JSONSerialization.data(withJSONObject: [
+                        "model": model,
+                        "messages": turns.map { ["role": $0.role, "content": $0.content] },
+                        "stream": true,
+                        "think": false,
+                    ])
+                    let (bytes, _) = try await URLSession.shared.bytes(for: req)
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        guard let d = line.data(using: .utf8),
+                              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
+                        else { continue }
+                        if let m = o["message"] as? [String: Any],
+                           let piece = m["content"] as? String, !piece.isEmpty {
+                            continuation.yield(piece)
+                        }
+                        if (o["done"] as? Bool) == true { break }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// Ordered async sequence of response chunks.
     static func streamSeq(prompt: String) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in

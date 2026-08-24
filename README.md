@@ -8,6 +8,11 @@ It routes each question to whichever of two local models handles it best:
 - **Apple's on-device Foundation Model** — built into macOS 26, instant, great at condensing text
 - **Qwen3-8B** — running locally via Ollama, better at reasoning, code and factual questions
 
+**It remembers the conversation.** Follow-ups work, and history is shared across both models —
+ask Apple's model something, and Qwen can still answer about it on the next turn.
+
+**Stop any answer mid-flight** with the stop button or Esc. What has already arrived is kept.
+
 **Paste or drop in a picture** (⌘V) and Vision reads it on-device — text via OCR, or a rough
 identification of the contents when there's no text. Note that neither model can actually *see*
 images: both are text-only, so what reaches them is Vision's output, not the picture.
@@ -102,6 +107,12 @@ There is no "always allow".
 Nothing is saved automatically. There is no autosave, no history folder, and no background writes.
 Press **Save** in the toolbar to write the current conversation to a Markdown file, wherever you
 choose. That is the only code path in the app that writes to disk.
+
+Saved files are ordinary Markdown you can read anywhere, and **Open** reloads one back into the
+app — the file carries a small machine-readable payload inside an HTML comment, invisible when
+rendered. Thumbnails are not stored, to keep the files small.
+
+Window size and the council / read-aloud toggles persist between launches. Conversations do not.
 
 ---
 

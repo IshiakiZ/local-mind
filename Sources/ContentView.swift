@@ -38,6 +38,7 @@ struct ContentView: View {
             // and their glass land ON the transcript instead of under it.
             header.zIndex(2)
             transcript.zIndex(0)
+            attachmentChip
             inputBar.zIndex(2)
         }
         .background(Backdrop())
@@ -100,6 +101,18 @@ struct ContentView: View {
                 }
                 .buttonStyle(IconButtonStyle(active: brain.speakReplies))
                 .help("Read replies aloud")
+
+                // Reopen a conversation this app saved earlier.
+                Button {
+                    if let result = ChatArchive.presentOpenPanel() {
+                        if !result.messages.isEmpty { brain.load(result.messages) }
+                        brain.messages.append(Msg(role: .note, text: result.status))
+                    }
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(IconButtonStyle(active: false))
+                .help("Open a conversation you saved earlier")
 
                 // Saving is OPT-IN. This button is the ONLY thing in the app
                 // that writes to disk, and it writes only where the user
@@ -319,6 +332,50 @@ struct ContentView: View {
 
     // MARK: Input
 
+    private func attachmentSubtitle(_ att: Attachment) -> String {
+        if att.hasText { return "text read — ask a question, or send to summarise" }
+        if att.visionLabels.isEmpty { return "no text found" }
+        let top = att.visionLabels.prefix(3).joined(separator: ", ")
+        return "identified: " + top
+    }
+
+    @ViewBuilder
+    private var attachmentChip: some View {
+        if let att = brain.attachment {
+            HStack(spacing: 9) {
+                Image(decorative: att.image, scale: 1)
+                    .resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: 34, height: 34)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(att.label)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(T.label)
+                        .lineLimit(1)
+                    Text(attachmentSubtitle(att))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(T.label2)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Button { brain.clearAttachment() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(T.label2)
+                }
+                .buttonStyle(.plain)
+                .help("Remove this image")
+            }
+            .padding(.horizontal, 9).padding(.vertical, 7)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: R.chip, style: .continuous))
+            .frame(maxWidth: S.measure)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, S.inputH)
+            .padding(.bottom, 6)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
     private var inputBar: some View {
         // One GlassEffectContainer so the three glass pieces sample the same
         // backdrop and MERGE at the edges instead of stacking translucency
@@ -360,18 +417,22 @@ struct ContentView: View {
                         return .handled
                     }
 
-                Button(action: submit) {
-                    Image(systemName: brain.isThinking ? "ellipsis" : "arrow.up")
+                // While a reply is being written this becomes a stop button —
+                // otherwise a long answer holds the whole app hostage.
+                Button(action: { brain.isThinking ? brain.stop() : submit() }) {
+                    Image(systemName: brain.isThinking ? "stop.fill" : "arrow.up")
                         .font(.system(size: 12, weight: .bold))
                         .contentTransition(.symbolEffect(.replace.downUp))
                         .frame(width: 17, height: 17)
                 }
                 .buttonStyle(.glassProminent)
-                .tint(Color.accentColor)
-                .disabled(!canSend)
+                .tint(brain.isThinking ? Color.secondary : Color.accentColor)
+                .disabled(!brain.isThinking && !canSend)
                 .animation(M.send, value: canSend)
+                .animation(M.send, value: brain.isThinking)
                 .id(accentWatch.tick)
-                .help(brain.isThinking ? "Working…" : "Send")
+                .keyboardShortcut(brain.isThinking ? .escape : .end, modifiers: [])
+                .help(brain.isThinking ? "Stop generating (Esc)" : "Send")
             }
             .frame(maxWidth: S.measure)
             .frame(maxWidth: .infinity)
@@ -390,7 +451,9 @@ struct ContentView: View {
     }
 
     private var canSend: Bool {
-        !brain.isThinking && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !brain.isThinking else { return false }
+        if brain.attachment != nil { return true }   // send with no question = summarise
+        return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func submit() {
@@ -692,6 +755,12 @@ struct MessageRow: View {
                                 onCancel: { onCancel(a.id) })
                 }
             }
+
+        case .note where msg.permission != nil:
+            // The designed permission UI, which was previously defined but
+            // never instantiated — a plain note row was shown instead.
+            PermissionBanner(perms: msg.permission!, needsCapture: msg.needsCapture)
+                .padding(.leading, S.gutter)
 
         case .note:
             HStack(alignment: .firstTextBaseline, spacing: 6) {
