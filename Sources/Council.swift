@@ -113,7 +113,37 @@ enum Router {
 
 // MARK: - Ollama
 
+enum OllamaError: LocalizedError {
+    case http(Int, String)
+    case server(String)
+    case empty
+
+    var errorDescription: String? {
+        switch self {
+        case .http(let code, let detail):
+            return "Ollama replied HTTP \(code). \(detail)"
+        case .server(let msg):
+            return "Ollama reported: \(msg)"
+        case .empty:
+            return "Ollama accepted the request but sent no text back. The model may not be installed — try `ollama pull qwen3:8b` in Terminal."
+        }
+    }
+}
+
 enum Ollama {
+    /// Turn a status code into something a person can act on.
+    static func explain(_ code: Int, _ body: String) -> String {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch code {
+        case 404:
+            return "The model “\(model)” isn't installed. Run `ollama pull \(model)` in Terminal."
+        case 400:
+            return "The request was rejected — this usually means Ollama is out of date. Run `brew upgrade ollama`. \(trimmed)"
+        default:
+            return trimmed
+        }
+    }
+
     static let base = URL(string: "http://127.0.0.1:11434")!
     nonisolated(unsafe) static var model = "qwen3:8b"
 
@@ -146,18 +176,58 @@ enum Ollama {
                         "stream": true,
                         "think": false,
                     ])
-                    let (bytes, _) = try await URLSession.shared.bytes(for: req)
+                    var (bytes, response) = try await URLSession.shared.bytes(for: req)
+
+                    // An error reply is NOT the stream we expect. Without this
+                    // check the body parses to nothing, the stream finishes
+                    // empty, and the UI spins forever on a "finished" answer.
+                    if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                        var body = ""
+                        for try await line in bytes.lines { body += line; if body.count > 400 { break } }
+
+                        // Older Ollama builds reject the `think` parameter outright.
+                        // Retry once without it rather than failing the user.
+                        if http.statusCode == 400, body.contains("think"), !turns.isEmpty {
+                            var retry = URLRequest(url: base.appendingPathComponent("api/chat"))
+                            retry.httpMethod = "POST"
+                            retry.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                            retry.timeoutInterval = 600
+                            retry.httpBody = try JSONSerialization.data(withJSONObject: [
+                                "model": model,
+                                "messages": turns.map { ["role": $0.role, "content": $0.content] },
+                                "stream": true,
+                            ])
+                            let (rb, rr) = try await URLSession.shared.bytes(for: retry)
+                            if let rh = rr as? HTTPURLResponse, rh.statusCode != 200 {
+                                throw OllamaError.http(rh.statusCode, body)
+                            }
+                            bytes = rb
+                        } else {
+                            throw OllamaError.http(http.statusCode, Self.explain(http.statusCode, body))
+                        }
+                    }
+
+                    var got = 0
+                    var sawThinkTag = false
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
                         guard let d = line.data(using: .utf8),
                               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
                         else { continue }
+                        if let err = o["error"] as? String { throw OllamaError.server(err) }
                         if let m = o["message"] as? [String: Any],
                            let piece = m["content"] as? String, !piece.isEmpty {
+                            // Older builds that ignore `think` inline the reasoning.
+                            if piece.contains("<think>") { sawThinkTag = true }
+                            got += 1
                             continuation.yield(piece)
                         }
                         if (o["done"] as? Bool) == true { break }
                     }
+                    if got == 0 && !Task.isCancelled {
+                        throw OllamaError.empty
+                    }
+                    _ = sawThinkTag
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)

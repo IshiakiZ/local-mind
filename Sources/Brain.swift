@@ -388,6 +388,13 @@ final class Brain: ObservableObject {
             }
             if Task.isCancelled { return }
             self.write(rid) { $0.elapsed = Date().timeIntervalSince(started) }
+
+            // Never leave a silent empty answer — that is indistinguishable
+            // from the app hanging.
+            if let i = self.slot(rid), self.messages[i].text.isEmpty {
+                self.messages.append(Msg(role: .note, text:
+                    "That answer came back empty. If this keeps happening, check Ollama is running and up to date: `brew services start ollama` then `brew upgrade ollama`, and make sure the model is installed with `ollama pull \(Ollama.model)`."))
+            }
             self.isThinking = false
             self.streamTask = nil
             if self.speakReplies, let i = self.slot(rid) { self.speak(self.messages[i].text) }

@@ -860,7 +860,17 @@ struct MessageRow: View {
                     }
 
                     if msg.text.isEmpty {
-                        if !msg.routing { ThinkingIndicator() }
+                        // `elapsed` is only set once the answer has finished, so
+                        // an empty row WITH a time is a failure, not work in
+                        // progress. Showing the spinner there made a dead answer
+                        // look like it was still loading, forever.
+                        if msg.elapsed != nil {
+                            Text("No answer came back. See the note below.")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(T.label2)
+                        } else if !msg.routing {
+                            ThinkingIndicator()
+                        }
                     } else {
                         // NO glass behind the answer body. Translucency under
                         // a paragraph destroys contrast; the answer is the one

@@ -82,6 +82,25 @@ Local Mind will not run without all of these:
 
 ---
 
+## Something not working?
+
+Run the diagnostic. It only reads — it changes nothing:
+
+```bash
+./doctor.sh
+```
+
+It checks your chip, macOS version, Apple Intelligence, Ollama, the model, and makes one real
+request, then tells you exactly which step failed and the command that fixes it.
+
+**Answer spins forever and never appears?** Almost always an out-of-date Ollama:
+
+```bash
+brew upgrade ollama && brew services restart ollama
+```
+
+---
+
 ## Screen features (optional)
 
 To let Local Mind read your screen or click things, grant it **Accessibility**:
