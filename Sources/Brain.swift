@@ -485,8 +485,11 @@ final class Brain: ObservableObject {
         streamingRow = id
         defer { streamingRow = nil }
         let turns = qwenHistory(currentPrompt: prompt)
+        // Let the model reach for a calculator or the clock before answering.
+        // This is what stops it guessing at arithmetic and dates.
+        let resolved = await Ollama.resolveTools(turns)
         do {
-            for try await piece in Ollama.chatStream(turns) {
+            for try await piece in Ollama.chatStreamRaw(resolved) {
                 if Task.isCancelled { break }
                 appendStreamed(piece, into: id)
             }

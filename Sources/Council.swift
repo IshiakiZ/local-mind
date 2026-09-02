@@ -183,6 +183,93 @@ enum Ollama {
         let content: String
     }
 
+    /// Let the model call tools before it answers.
+    ///
+    /// Runs a short non-streaming exchange: ask with the tool definitions, run
+    /// whatever it asks for, feed the results back, repeat. Returns the message
+    /// array to stream the final answer from. Tools are read-only and cannot
+    /// change the machine, so no confirmation is needed — unlike screen actions.
+    static func resolveTools(_ turns: [Turn], maxRounds: Int = 3) async -> [[String: Any]] {
+        var msgs: [[String: Any]] = turns.map { ["role": $0.role, "content": $0.content] }
+
+        for _ in 0..<maxRounds {
+            var req = URLRequest(url: base.appendingPathComponent("api/chat"))
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.timeoutInterval = 120
+            guard let body = try? JSONSerialization.data(withJSONObject: [
+                "model": model, "messages": msgs, "stream": false,
+                "think": false, "tools": Tools.definitions,
+            ]) else { return msgs }
+            req.httpBody = body
+
+            guard let (data, resp) = try? await URLSession.shared.data(for: req),
+                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                  let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let message = o["message"] as? [String: Any] else {
+                return msgs      // tools unsupported or unreachable — answer without them
+            }
+
+            guard let calls = message["tool_calls"] as? [[String: Any]], !calls.isEmpty else {
+                return msgs      // nothing to call; stream the answer normally
+            }
+
+            msgs.append(message)
+            for call in calls {
+                guard let fn = call["function"] as? [String: Any],
+                      let name = fn["name"] as? String else { continue }
+                let args = (fn["arguments"] as? [String: Any]) ?? [:]
+                let result = Tools.run(name: name, arguments: args)
+                msgs.append(["role": "tool", "name": name, "content": result])
+            }
+        }
+        return msgs
+    }
+
+    /// Stream a reply from an already-built message array.
+    static func chatStreamRaw(_ msgs: [[String: Any]]) -> AsyncThrowingStream<String, Error> {
+        // Encode BEFORE the Task: [[String: Any]] is not Sendable, so capturing
+        // it in the closure is a data race. Data is.
+        let payload = try? JSONSerialization.data(withJSONObject: [
+            "model": model, "messages": msgs, "stream": true, "think": false,
+        ])
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard let payload else { throw OllamaError.empty }
+                    var req = URLRequest(url: base.appendingPathComponent("api/chat"))
+                    req.httpMethod = "POST"
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.timeoutInterval = 600
+                    req.httpBody = payload
+                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                    if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                        var body = ""
+                        for try await l in bytes.lines { body += l; if body.count > 400 { break } }
+                        throw OllamaError.http(http.statusCode, Self.explain(http.statusCode, body))
+                    }
+                    var got = 0
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        guard let d = line.data(using: .utf8),
+                              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
+                        else { continue }
+                        if let e = o["error"] as? String { throw OllamaError.server(e) }
+                        if let m = o["message"] as? [String: Any],
+                           let piece = m["content"] as? String, !piece.isEmpty {
+                            got += 1
+                            continuation.yield(piece)
+                        }
+                        if (o["done"] as? Bool) == true { break }
+                    }
+                    if got == 0 && !Task.isCancelled { throw OllamaError.empty }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// Streaming chat WITH history. `/api/generate` is stateless — it only ever
     /// sees the latest prompt, which is why follow-up questions used to fail.
     /// `/api/chat` takes the whole exchange.

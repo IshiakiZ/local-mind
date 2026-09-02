@@ -8,6 +8,10 @@ It routes each question to whichever of two local models handles it best:
 - **Apple's on-device Foundation Model** — built into macOS 26, instant, great at condensing text
 - **Qwen3-8B** — running locally via Ollama, better at reasoning, code and factual questions
 
+**It can use tools.** Rather than guessing at arithmetic or dates, Qwen calls a calculator, a
+clock, and a time-adder, then answers from the result. This fixed both reasoning failures the
+benchmark found. The tools are read-only — they cannot change your machine or reach the network.
+
 **It remembers the conversation.** Follow-ups work, and history is shared across both models —
 ask Apple's model something, and Qwen can still answer about it on the next turn.
 
