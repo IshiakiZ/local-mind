@@ -163,6 +163,27 @@ There is no "always allow".
 
 ---
 
+## Choosing a model — important on a MacBook Air
+
+Click the model name in the title bar to switch between any models you have installed.
+
+**On a MacBook Air, use a smaller model.** The Air is fanless and has lower memory bandwidth, so
+an 8B model makes it throttle and crawl. Measured on an M5 Pro — the gap is wider on an Air:
+
+| Model | Speed | Memory while loaded | Download |
+|---|---|---|---|
+| `qwen3:8b` | 50 tok/s | 5.6 GB | 5.2 GB |
+| `qwen3:4b` | **83 tok/s** | **2.9 GB** | 2.5 GB |
+
+```bash
+ollama pull qwen3:4b
+```
+
+Then pick it from the model menu in the title bar. It is a little weaker at hard reasoning, but the
+tools (calculator, clock) do the work it used to get wrong anyway.
+
+---
+
 ## Keyboard shortcuts
 
 | Key | Does |

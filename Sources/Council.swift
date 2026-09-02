@@ -145,7 +145,24 @@ enum Ollama {
     }
 
     static let base = URL(string: "http://127.0.0.1:11434")!
-    nonisolated(unsafe) static var model = "qwen3:8b"
+    /// Which Ollama model to use. Stored, so it survives relaunch and can be
+    /// changed without rebuilding — a fanless MacBook Air is far happier on a
+    /// 4B model than an 8B one.
+    nonisolated(unsafe) static var model: String = {
+        UserDefaults.standard.string(forKey: "ollamaModel") ?? "qwen3:8b"
+    }() {
+        didSet { UserDefaults.standard.set(model, forKey: "ollamaModel") }
+    }
+
+    /// Models actually installed on this machine.
+    static func installedModels() async -> [String] {
+        var req = URLRequest(url: base.appendingPathComponent("api/tags"))
+        req.timeoutInterval = 5
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = o["models"] as? [[String: Any]] else { return [] }
+        return list.compactMap { $0["name"] as? String }.sorted()
+    }
 
     /// Ask Ollama to drop the model from memory. `keep_alive: 0` unloads it
     /// immediately, giving back the ~6 GB it was holding. The server itself

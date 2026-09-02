@@ -114,7 +114,9 @@ struct ContentView: View {
                 Text("Local Mind")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(T.label)
-                ModelStatusStrip(appleReady: brain.modelReady, qwenReady: brain.qwenReady)
+                ModelStatusStrip(appleReady: brain.modelReady, qwenReady: brain.qwenReady,
+                                 models: brain.installedModels, active: brain.activeModel,
+                                 onPick: { brain.setModel($0) })
             }
 
             Spacer()
@@ -629,11 +631,35 @@ struct Backdrop: View {
 struct ModelStatusStrip: View {
     let appleReady: Bool
     let qwenReady: Bool
+    var models: [String] = []
+    var active: String = ""
+    var onPick: (String) -> Void = { _ in }
 
     var body: some View {
         HStack(spacing: 10) {
             item(name: "apple", ready: appleReady, tint: T.apple)
-            item(name: Ollama.model, ready: qwenReady, tint: T.qwen)
+            // Clicking the model name swaps models. A fanless MacBook Air is
+            // much happier on a 4B model than an 8B one, and that shouldn't
+            // require rebuilding the app.
+            if models.count > 1 {
+                Menu {
+                    ForEach(models, id: \.self) { m in
+                        Button { onPick(m) } label: {
+                            if m == active { Label(m, systemImage: "checkmark") } else { Text(m) }
+                        }
+                    }
+                } label: {
+                    item(name: active.isEmpty ? Ollama.model : active,
+                         ready: qwenReady, tint: T.qwen)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Click to switch model. Smaller models are much faster on a MacBook Air.")
+            } else {
+                item(name: active.isEmpty ? Ollama.model : active,
+                     ready: qwenReady, tint: T.qwen)
+            }
         }
         .help("Green means the model is loaded and reachable")
     }

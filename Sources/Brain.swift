@@ -46,6 +46,8 @@ enum Defaults {
 @MainActor
 final class Brain: ObservableObject {
     @Published var attachment: Attachment? = nil
+    @Published var installedModels: [String] = []
+    @Published var activeModel: String = Ollama.model
     @Published var messages: [Msg] = []
     @Published var isThinking = false
     @Published var modelReady = false
@@ -84,8 +86,15 @@ final class Brain: ObservableObject {
         Task { await refreshQwen() }
     }
 
+    func setModel(_ name: String) {
+        Ollama.model = name
+        activeModel = name
+        Task { await refreshQwen() }
+    }
+
     func refreshQwen() async {
         qwenReady = await Ollama.isUp()
+        if qwenReady { installedModels = await Ollama.installedModels() }
     }
 
     func checkAvailability() {
