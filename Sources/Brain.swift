@@ -362,14 +362,39 @@ final class Brain: ObservableObject {
             var route: Route
             if self.councilEnabled {
                 route = await Router.route(prompt)
-                if route.member == .qwen && !self.qwenReady {
-                    await self.refreshQwen()
-                    if !self.qwenReady {
-                        route = Route(category: route.category, member: .apple, viaRule: route.viaRule)
-                    }
-                }
             } else {
                 route = Route(category: .knowledge, member: .apple, viaRule: true)
+            }
+
+            // Fall back in BOTH directions. Only Qwen-down was handled before,
+            // so on a Mac without Apple Intelligence every question routed to
+            // Apple simply failed while Qwen ones worked — which looks random.
+            if route.member == .qwen && !self.qwenReady {
+                await self.refreshQwen()
+                if !self.qwenReady && self.modelReady {
+                    route = Route(category: route.category, member: .apple, viaRule: route.viaRule)
+                }
+            }
+            if route.member == .apple && !self.modelReady {
+                await self.refreshQwen()
+                if self.qwenReady {
+                    route = Route(category: route.category, member: .qwen, viaRule: route.viaRule)
+                }
+            }
+
+            // Neither is usable — say so instead of hanging.
+            if (route.member == .apple && !self.modelReady)
+                || (route.member == .qwen && !self.qwenReady) {
+                self.write(rid) {
+                    $0.routing = false
+                    $0.elapsed = 0
+                    $0.text = ""
+                }
+                self.messages.append(Msg(role: .note, text:
+                    "Neither model is available. Apple's on-device model needs Apple Intelligence turned on in System Settings, and Qwen needs Ollama running (`brew services start ollama`). Run ./doctor.sh to see which one is missing."))
+                self.isThinking = false
+                self.streamTask = nil
+                return
             }
 
             guard self.slot(rid) != nil else { self.isThinking = false; return }

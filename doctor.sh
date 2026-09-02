@@ -3,6 +3,18 @@
 # Run:  ./doctor.sh
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 ok(){ printf "  \033[32m✓\033[0m %s\n" "$1"; }
+# `timeout` ships with GNU coreutils and is NOT on a stock Mac. Rolling our own
+# so this script works on a machine that has never seen Homebrew extras.
+run_limited(){ # run_limited <seconds> <cmd...>
+  local secs=$1; shift
+  "$@" & local pid=$!
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$((i+1)); [ "$i" -ge $((secs*10)) ] && { kill -9 "$pid" 2>/dev/null; return 124; }
+    sleep 0.1
+  done
+  wait "$pid"
+}
 bad(){ printf "  \033[31m✗\033[0m %s\n" "$1"; }
 warn(){ printf "  \033[33m!\033[0m %s\n" "$1"; }
 
@@ -26,12 +38,14 @@ case .unavailable(let r): print("UNAVAILABLE: \(r)")
 @unknown default: print("UNKNOWN")
 }
 SWIFT
-  R=$(timeout 60 swift /tmp/_lm_fm.swift 2>/dev/null | tail -1)
+  R=$(run_limited 90 swift /tmp/_lm_fm.swift 2>/dev/null | tail -1)
   case "$R" in
     AVAILABLE) ok "Apple Intelligence model ready";;
     UNAVAILABLE*) bad "$R";
                   echo "      Turn on Apple Intelligence: System Settings › Apple Intelligence & Siri";;
-    *) warn "Could not check (needs Xcode Command Line Tools)";;
+    "") warn "Check produced no result — Swift may be slow on first run. Try again."
+        echo "      If it keeps failing: System Settings › Apple Intelligence & Siri";;
+    *) warn "Unexpected result: $R";;
   esac
   rm -f /tmp/_lm_fm.swift
 else
