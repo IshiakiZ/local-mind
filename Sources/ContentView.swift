@@ -981,14 +981,22 @@ struct MessageRow: View {
                     if msg.routing {
                         ThinkingIndicator()
                     } else if let m = msg.member, let c = msg.category {
-                        RoutingBadge(name: m == .qwen ? Ollama.model : "apple on-device",
-                                     blurb: c.blurb,
-                                     viaRule: msg.viaRule,
-                                     elapsed: msg.elapsed,
-                                     tint: tint)
-                            .transition(reduceMotion
-                                        ? .opacity
-                                        : .opacity.combined(with: .scale(scale: 0.94, anchor: .leading)))
+                        HStack(spacing: 6) {
+                            RoutingBadge(name: m == .qwen ? Ollama.model : "apple on-device",
+                                         blurb: c.blurb,
+                                         viaRule: msg.viaRule,
+                                         elapsed: msg.elapsed,
+                                         tint: tint)
+                            // Only once the answer has actually finished —
+                            // offering to copy a half-written reply is a trap.
+                            if msg.elapsed != nil, !msg.text.isEmpty {
+                                CopyAnswerButton(text: msg.text)
+                                    .transition(.opacity)
+                            }
+                        }
+                        .transition(reduceMotion
+                                    ? .opacity
+                                    : .opacity.combined(with: .scale(scale: 0.94, anchor: .leading)))
                     }
 
                     if msg.text.isEmpty {
@@ -1206,5 +1214,38 @@ struct UpdatePanel: View {
             Button(title) { Task { await updater.check() } }
                 .buttonStyle(.bordered).controlSize(.small)
         }
+    }
+}
+
+
+// MARK: - Copy an answer
+
+struct CopyAnswerButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+            withAnimation(.easeOut(duration: 0.15)) { copied = true }
+            // Confirm, then quietly go back — a permanent tick is a lie.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                withAnimation(.easeOut(duration: 0.2)) { copied = false }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 9.5, weight: .medium))
+                Text(copied ? "Copied" : "Copy")
+                    .font(.system(size: 10, design: .monospaced))
+            }
+            .foregroundStyle(copied ? T.ready : T.label2)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Copy this answer")
     }
 }

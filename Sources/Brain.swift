@@ -72,6 +72,7 @@ final class Brain: ObservableObject {
     private var streamTask: Task<Void, Never>? = nil
     private var streamingRow: UUID? = nil
     private var streamBuf = ""
+    private var rawAnswer = ""   // unfiltered text, so <think> spanning chunks still strips
     private var lastFlush = Date.distantPast
 
     private static let persona = """
@@ -488,18 +489,26 @@ final class Brain: ObservableObject {
         streamBuf += piece
         let now = Date()
         guard now.timeIntervalSince(lastFlush) >= 0.05 else { return }
-        let chunk = streamBuf
+        rawAnswer += streamBuf
         streamBuf = ""
         lastFlush = now
-        write(id) { $0.text += chunk }
+        // Assign the CLEANED accumulation rather than appending the raw chunk:
+        // a <think> tag can straddle two chunks, so it can only be stripped
+        // reliably from the whole text.
+        let shown = cleaned(rawAnswer)
+        write(id) { $0.text = shown }
     }
+
+    /// Hide any chain-of-thought the model emits inline.
+    private func cleaned(_ raw: String) -> String { Reasoning.strip(raw) }
 
     private func flushStream(into id: UUID) {
         if !streamBuf.isEmpty {
-            let chunk = streamBuf
+            rawAnswer += streamBuf
             streamBuf = ""
-            write(id) { $0.text += chunk }
         }
+        let shown = cleaned(rawAnswer)
+        write(id) { $0.text = shown }
         lastFlush = .distantPast
     }
 
@@ -517,11 +526,13 @@ final class Brain: ObservableObject {
                 latest = partial.content
                 let now = Date()
                 if now.timeIntervalSince(gate) >= 0.05 {
-                    write(id) { $0.text = latest }
+                    let shown = cleaned(latest)
+                    write(id) { $0.text = shown }
                     gate = now
                 }
             }
-            write(id) { $0.text = latest }
+            let final = cleaned(latest)
+            write(id) { $0.text = final }
         } catch {
             write(id) { $0.text = "Something went wrong: \(error.localizedDescription)" }
         }
@@ -529,13 +540,17 @@ final class Brain: ObservableObject {
 
     private func answerQwen(_ prompt: String, into id: UUID) async {
         streamBuf = ""
+        rawAnswer = ""
         lastFlush = .distantPast
         streamingRow = id
         defer { streamingRow = nil }
         let turns = qwenHistory(currentPrompt: prompt)
-        // Let the model reach for a calculator or the clock before answering.
-        // This is what stops it guessing at arithmetic and dates.
-        let resolved = await Ollama.resolveTools(turns)
+        // Let the model reach for a calculator or the clock before answering —
+        // but only when the question looks like it might need one. The tool
+        // phase is an extra model round-trip and roughly doubles the wait.
+        let resolved = Ollama.mightNeedTools(prompt)
+            ? await Ollama.resolveTools(turns)
+            : turns.map { ["role": $0.role, "content": $0.content] }
         do {
             for try await piece in Ollama.chatStreamRaw(resolved) {
                 if Task.isCancelled { break }

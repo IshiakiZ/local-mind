@@ -63,10 +63,15 @@ else
   else
     bad "server not running — run: brew services start ollama"
   fi
-  if ollama list 2>/dev/null | grep -q "qwen3:8b"; then
-    ok "qwen3:8b installed"
+  # Check the model the APP is set to, not a hardcoded one — it is selectable.
+  MODEL=$(defaults read com.pearce.localmind ollamaModel 2>/dev/null || echo "qwen3:8b")
+  if ollama list 2>/dev/null | grep -q "^${MODEL} "; then
+    ok "${MODEL} installed (the model Local Mind is set to use)"
   else
-    bad "qwen3:8b missing — run: ollama pull qwen3:8b"
+    bad "${MODEL} missing — either: ollama pull ${MODEL}"
+    echo "      or pick an installed one from the model menu in Local Mind's title bar."
+    echo "      installed right now:"
+    ollama list 2>/dev/null | tail -n +2 | awk '{print "        " $1}'
   fi
 fi
 
@@ -75,8 +80,7 @@ echo "── Live request (this is what the app actually does) ─"
 if curl -s --max-time 3 http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
   START=$(date +%s)
   CODE=$(curl -s -o /tmp/_lm_body.txt -w "%{http_code}" --max-time 180 \
-    -X POST http://127.0.0.1:11434/api/chat \
-    -d '{"model":"qwen3:8b","messages":[{"role":"user","content":"Say hello in three words."}],"stream":false,"think":false}')
+    -X POST http://127.0.0.1:11434/api/chat -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in three words.\"}],\"stream\":false}")
   SECS=$(( $(date +%s) - START ))
   if [ "$CODE" = "200" ]; then
     REPLY=$(python3 -c "import json;print(json.load(open('/tmp/_lm_body.txt'))['message']['content'][:60])" 2>/dev/null)
@@ -85,8 +89,8 @@ if curl -s --max-time 3 http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
   else
     bad "HTTP $CODE in ${SECS}s"
     echo "      $(head -c 300 /tmp/_lm_body.txt)"
-    grep -q "think" /tmp/_lm_body.txt 2>/dev/null && \
-      echo "      ↳ Your Ollama is too old for this request. Run: brew upgrade ollama"
+    grep -q "not found" /tmp/_lm_body.txt 2>/dev/null && \
+      echo "      ↳ Pull it with: ollama pull ${MODEL}"
   fi
   echo "  loaded models:"; ollama ps 2>/dev/null | tail -n +2 | sed 's/^/      /'
   rm -f /tmp/_lm_body.txt

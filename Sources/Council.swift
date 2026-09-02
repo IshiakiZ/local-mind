@@ -113,6 +113,26 @@ enum Router {
 
 // MARK: - Ollama
 
+/// Some qwen3 builds emit their chain of thought inline. Strip it rather than
+/// showing the user the model muttering to itself.
+enum Reasoning {
+    /// Removes complete <think>…</think> blocks. While a block is still open
+    /// (mid-stream) everything from the tag onward is hidden until it closes.
+    static func strip(_ text: String) -> String {
+        var out = text
+        while let open = out.range(of: "<think>") {
+            if let close = out.range(of: "</think>", range: open.upperBound..<out.endIndex) {
+                out.removeSubrange(open.lowerBound..<close.upperBound)
+            } else {
+                out.removeSubrange(open.lowerBound..<out.endIndex)
+                break
+            }
+        }
+        return out.replacingOccurrences(of: "</think>", with: "")
+                  .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 enum OllamaError: LocalizedError {
     case http(Int, String)
     case server(String)
@@ -206,6 +226,19 @@ enum Ollama {
     /// whatever it asks for, feed the results back, repeat. Returns the message
     /// array to stream the final answer from. Tools are read-only and cannot
     /// change the machine, so no confirmation is needed — unlike screen actions.
+    /// The tool phase costs a whole extra model round-trip, which roughly
+    /// doubles the wait. Most questions never need a calculator or a clock, so
+    /// only pay for it when the text actually looks like it might.
+    static func mightNeedTools(_ prompt: String) -> Bool {
+        let t = prompt.lowercased()
+        if t.contains(where: \.isNumber) { return true }
+        let words = ["calculate", "how much", "how many", "percent", "%", "total", "sum",
+                     "average", "today", "tomorrow", "yesterday", "what day", "what date",
+                     "time is it", "how long", "date", "convert", "times", "divided",
+                     "multiply", "plus", "minus"]
+        return words.contains { t.contains($0) }
+    }
+
     static func resolveTools(_ turns: [Turn], maxRounds: Int = 3) async -> [[String: Any]] {
         var msgs: [[String: Any]] = turns.map { ["role": $0.role, "content": $0.content] }
 
@@ -216,7 +249,7 @@ enum Ollama {
             req.timeoutInterval = 120
             guard let body = try? JSONSerialization.data(withJSONObject: [
                 "model": model, "messages": msgs, "stream": false,
-                "think": false, "tools": Tools.definitions,
+                "tools": Tools.definitions,
             ]) else { return msgs }
             req.httpBody = body
 
@@ -248,7 +281,7 @@ enum Ollama {
         // Encode BEFORE the Task: [[String: Any]] is not Sendable, so capturing
         // it in the closure is a data race. Data is.
         let payload = try? JSONSerialization.data(withJSONObject: [
-            "model": model, "messages": msgs, "stream": true, "think": false,
+            "model": model, "messages": msgs, "stream": true,
         ])
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -302,7 +335,6 @@ enum Ollama {
                         "model": model,
                         "messages": turns.map { ["role": $0.role, "content": $0.content] },
                         "stream": true,
-                        "think": false,
                     ])
                     var (bytes, response) = try await URLSession.shared.bytes(for: req)
 
@@ -375,7 +407,7 @@ enum Ollama {
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     req.timeoutInterval = 600
                     req.httpBody = try JSONSerialization.data(withJSONObject: [
-                        "model": model, "prompt": prompt, "stream": true, "think": false
+                        "model": model, "prompt": prompt, "stream": true
                     ])
                     let (bytes, _) = try await URLSession.shared.bytes(for: req)
                     for try await line in bytes.lines {
@@ -401,7 +433,7 @@ enum Ollama {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 300
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "prompt": prompt, "stream": true, "think": false
+            "model": model, "prompt": prompt, "stream": true
         ])
         let (bytes, _) = try await URLSession.shared.bytes(for: req)
         for try await line in bytes.lines {
