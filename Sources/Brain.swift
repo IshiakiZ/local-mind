@@ -94,7 +94,21 @@ final class Brain: ObservableObject {
 
     func refreshQwen() async {
         qwenReady = await Ollama.isUp()
-        if qwenReady { installedModels = await Ollama.installedModels() }
+        if qwenReady {
+            installedModels = await Ollama.installedModels()
+            // If the model we were pointed at has been deleted, move to one that
+            // exists rather than failing every question with a 404.
+            if !installedModels.isEmpty, !installedModels.contains(Ollama.model) {
+                let replacement = installedModels.first { $0.hasPrefix("qwen") }
+                    ?? installedModels[0]
+                let gone = Ollama.model
+                Ollama.model = replacement
+                activeModel = replacement
+                messages.append(Msg(role: .note, text:
+                    "“\(gone)” is no longer installed, so Local Mind switched to “\(replacement)”. Pick a different one from the model menu in the title bar."))
+            }
+            activeModel = Ollama.model
+        }
     }
 
     func checkAvailability() {
