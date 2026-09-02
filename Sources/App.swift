@@ -1,6 +1,19 @@
 import SwiftUI
 import AppKit
 
+/// Menu commands live in the menu bar so their shortcuts are discoverable
+/// rather than secret. They reach the view through notifications, because the
+/// Brain instance belongs to ContentView.
+extension Notification.Name {
+    static let lmNewChat      = Notification.Name("lm.newChat")
+    static let lmOpen         = Notification.Name("lm.open")
+    static let lmSave         = Notification.Name("lm.save")
+    static let lmFocusInput   = Notification.Name("lm.focusInput")
+    static let lmCheckUpdates = Notification.Name("lm.checkUpdates")
+    static let lmStop         = Notification.Name("lm.stop")
+    static let lmAttach       = Notification.Name("lm.attach")
+}
+
 @main
 struct LocalMindApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -11,6 +24,29 @@ struct LocalMindApp: App {
                 .frame(minWidth: 680, minHeight: 520)
         }
         .defaultSize(width: 880, height: 700)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Conversation") { post(.lmNewChat) }
+                    .keyboardShortcut("n", modifiers: .command)
+                Divider()
+                Button("Open Conversation…") { post(.lmOpen) }
+                    .keyboardShortcut("o", modifiers: .command)
+                Button("Save Conversation…") { post(.lmSave) }
+                    .keyboardShortcut("s", modifiers: .command)
+                Divider()
+                Button("Attach Image…") { post(.lmAttach) }
+                    .keyboardShortcut("i", modifiers: .command)
+            }
+            CommandGroup(after: .toolbar) {
+                Button("Focus Message Box") { post(.lmFocusInput) }
+                    .keyboardShortcut("l", modifiers: .command)
+                Button("Stop Generating") { post(.lmStop) }
+                    .keyboardShortcut(".", modifiers: .command)
+            }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { post(.lmCheckUpdates) }
+            }
+        }
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
     }
@@ -32,6 +68,10 @@ struct WindowConfigurator: NSViewRepresentable {
         return v
     }
     func updateNSView(_ v: NSView, context: Context) {}
+}
+
+@MainActor private func post(_ n: Notification.Name) {
+    NotificationCenter.default.post(name: n, object: nil)
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

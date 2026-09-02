@@ -18,6 +18,8 @@ struct ContentView: View {
     @StateObject private var brain = Brain()
     @StateObject private var updater = Updater()
     @State private var showUpdate = false
+    @State private var historyIndex: Int? = nil   // nil = composing something new
+    @State private var stash = ""                 // what was typed before recall started
     @StateObject private var accentWatch = AccentWatch()
 
     @State private var draft = ""
@@ -67,6 +69,37 @@ struct ContentView: View {
         .task {
             // Opt-in only, and exactly once per launch. This never polls.
             if updater.autoCheck { await updater.check() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lmNewChat)) { _ in
+            brain.stopSpeaking(); brain.reset(); draft = ""; historyIndex = nil
+            inputFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lmSave)) { _ in
+            if let status = ChatArchive.presentSavePanel(for: brain.messages) {
+                brain.messages.append(Msg(role: .note, text: status))
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lmOpen)) { _ in
+            if let r = ChatArchive.presentOpenPanel() {
+                if !r.messages.isEmpty { brain.load(r.messages) }
+                brain.messages.append(Msg(role: .note, text: r.status))
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lmFocusInput)) { _ in
+            inputFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lmStop)) { _ in
+            brain.stop()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lmAttach)) { _ in
+            let p = NSOpenPanel()
+            p.allowedContentTypes = [.image]
+            p.allowsMultipleSelection = false
+            if p.runModal() == .OK, let u = p.url { brain.ingest(u) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lmCheckUpdates)) { _ in
+            showUpdate = true
+            Task { await updater.check() }
         }
         .onDisappear {
             if let m = pasteMonitor { NSEvent.removeMonitor(m); pasteMonitor = nil }
@@ -433,6 +466,18 @@ struct ContentView: View {
                         .strokeBorder(inputFocused ? Color.accentColor.opacity(0.70) : Color.clear,
                                       lineWidth: 1.5))
                     .animation(M.focus, value: inputFocused)
+                    .onKeyPress(.upArrow, phases: .down) { _ in
+                        recallOlder() ? .handled : .ignored
+                    }
+                    .onKeyPress(.downArrow, phases: .down) { _ in
+                        recallNewer() ? .handled : .ignored
+                    }
+                    .onKeyPress(.escape, phases: .down) { _ in
+                        if brain.isThinking { brain.stop(); return .handled }
+                        if !draft.isEmpty { draft = ""; historyIndex = nil; return .handled }
+                        if brain.attachment != nil { brain.clearAttachment(); return .handled }
+                        return .ignored
+                    }
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) { return .ignored }
                         submit()
@@ -472,6 +517,43 @@ struct ContentView: View {
         .shadow(color: T.castHard, radius: 16, y: -5)
     }
 
+    /// Everything you have sent, oldest first.
+    private var sentHistory: [String] {
+        brain.messages.filter { $0.role == .user && !$0.text.isEmpty }.map(\.text)
+    }
+
+    /// Up-arrow walks back through what you typed, like a terminal.
+    /// It only takes over when the field is empty or you are already browsing,
+    /// so it never fights normal cursor movement in a multi-line draft.
+    private func recallOlder() -> Bool {
+        let h = sentHistory
+        guard !h.isEmpty else { return false }
+        if historyIndex == nil {
+            guard draft.isEmpty else { return false }
+            stash = draft
+            historyIndex = h.count - 1
+        } else if let i = historyIndex, i > 0 {
+            historyIndex = i - 1
+        } else {
+            return true    // already at the oldest; swallow the key
+        }
+        draft = h[historyIndex!]
+        return true
+    }
+
+    private func recallNewer() -> Bool {
+        guard let i = historyIndex else { return false }
+        let h = sentHistory
+        if i + 1 < h.count {
+            historyIndex = i + 1
+            draft = h[i + 1]
+        } else {
+            historyIndex = nil
+            draft = stash          // back to whatever you were writing
+        }
+        return true
+    }
+
     private var canSend: Bool {
         guard !brain.isThinking else { return false }
         if brain.attachment != nil { return true }   // send with no question = summarise
@@ -479,6 +561,8 @@ struct ContentView: View {
     }
 
     private func submit() {
+        historyIndex = nil
+        stash = ""
         guard canSend else { return }
         brain.send(draft)
         draft = ""
