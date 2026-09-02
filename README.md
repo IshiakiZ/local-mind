@@ -82,6 +82,30 @@ Local Mind will not run without all of these:
 
 ---
 
+## Update or reinstall
+
+Already have it and want the latest version? Quit Local Mind, then paste this one line:
+
+```bash
+rm -rf ~/local-mind /Applications/LocalMind.app && git clone https://github.com/IshiakiZ/local-mind.git ~/local-mind && cd ~/local-mind && ./build.sh && cp -R LocalMind.app /Applications/
+```
+
+It removes the old copy, fetches the current version, rebuilds and installs it. Takes about a
+minute — the 5 GB model is **not** re-downloaded, only the app itself.
+
+While you are at it, keep Ollama current. An out-of-date Ollama is the usual cause of an answer
+that spins forever and never appears:
+
+```bash
+brew upgrade ollama && brew services restart ollama
+```
+
+Then reopen Local Mind from your Applications folder. If you had granted Accessibility permission,
+macOS may ask again — a rebuilt app gets a new signature (see the code-signing note at the bottom
+to make grants stick permanently).
+
+---
+
 ## Something not working?
 
 Run the diagnostic. It only reads — it changes nothing:
