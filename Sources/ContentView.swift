@@ -16,6 +16,8 @@ func calmed(_ a: Animation, _ reduce: Bool, _ seconds: Double) -> Animation {
 
 struct ContentView: View {
     @StateObject private var brain = Brain()
+    @StateObject private var updater = Updater()
+    @State private var showUpdate = false
     @StateObject private var accentWatch = AccentWatch()
 
     @State private var draft = ""
@@ -62,6 +64,10 @@ struct ContentView: View {
             inputFocused = true
             installPasteMonitor()
         }
+        .task {
+            // Opt-in only, and exactly once per launch. This never polls.
+            if updater.autoCheck { await updater.check() }
+        }
         .onDisappear {
             if let m = pasteMonitor { NSEvent.removeMonitor(m); pasteMonitor = nil }
         }
@@ -101,6 +107,22 @@ struct ContentView: View {
                 }
                 .buttonStyle(IconButtonStyle(active: brain.speakReplies))
                 .help("Read replies aloud")
+
+                // The only network feature in the app. Manual by default.
+                Button { showUpdate.toggle() } label: {
+                    Image(systemName: "arrow.down.circle")
+                        .overlay(alignment: .topTrailing) {
+                            if updater.isUpdateAvailable {
+                                Circle().fill(Color.accentColor)
+                                    .frame(width: 6, height: 6).offset(x: 3, y: -2)
+                            }
+                        }
+                }
+                .buttonStyle(IconButtonStyle(active: updater.isUpdateAvailable))
+                .help("Check for a new version")
+                .popover(isPresented: $showUpdate, arrowEdge: .bottom) {
+                    UpdatePanel(updater: updater)
+                }
 
                 // Reopen a conversation this app saved earlier.
                 Button {
@@ -992,4 +1014,87 @@ struct WindowBackground: NSViewRepresentable {
         return v
     }
     func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+}
+
+
+// MARK: - Update panel
+
+struct UpdatePanel: View {
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Version").font(.system(size: 13, weight: .semibold))
+            Text("Installed: \(updater.installedSummary)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(T.label2)
+                .textSelection(.enabled)
+
+            Divider()
+            body(for: updater.state)
+
+            Divider()
+            Toggle(isOn: $updater.autoCheck) {
+                Text("Check once when Local Mind opens")
+                    .font(.system(size: 11.5))
+            }
+            .toggleStyle(.checkbox)
+            Text("Checking asks GitHub for the latest version. Nothing about your conversations is ever sent, and the AI itself never uses the network.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(T.label2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 330, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func body(for state: Updater.State) -> some View {
+        switch state {
+        case .idle:
+            checkButton("Check for updates")
+        case .checking:
+            HStack(spacing: 7) { ProgressView().controlSize(.small); Text("Checking…").font(.system(size: 12)) }
+        case .upToDate:
+            Label("You're on the latest version", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12)).foregroundStyle(T.ready)
+            checkButton("Check again")
+        case .available(_, let short, let subject, let when):
+            VStack(alignment: .leading, spacing: 5) {
+                Label("Update available", systemImage: "arrow.down.circle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                Text(subject).font(.system(size: 11.5)).foregroundStyle(T.label)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("\(short)\(when.isEmpty ? "" : " · " + when)")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(T.label2)
+            }
+            Text("Local Mind will close, rebuild from source, and reopen. Takes about a minute.")
+                .font(.system(size: 10.5)).foregroundStyle(T.label2)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Update and restart") { updater.applyUpdate() }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+        case .updating:
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.small)
+                Text("Updating — the app will reopen itself.").font(.system(size: 12))
+            }
+        case .failed(let why):
+            Label(why, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 11.5)).foregroundStyle(T.label2)
+                .fixedSize(horizontal: false, vertical: true)
+            checkButton("Try again")
+        }
+    }
+
+    @ViewBuilder
+    private func checkButton(_ title: String) -> some View {
+        if let reason = updater.unavailableReason {
+            Text(reason).font(.system(size: 11.5)).foregroundStyle(T.label2)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Button(title) { Task { await updater.check() } }
+                .buttonStyle(.bordered).controlSize(.small)
+        }
+    }
 }
