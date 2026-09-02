@@ -40,4 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+
+    /// Give the memory back on the way out. Ollama otherwise keeps the model
+    /// resident for minutes after the app is gone, which matters a lot on a
+    /// 16 GB machine.
+    func applicationWillTerminate(_ note: Notification) {
+        Ollama.unloadBlocking()
+    }
 }

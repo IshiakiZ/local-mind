@@ -147,6 +147,30 @@ enum Ollama {
     static let base = URL(string: "http://127.0.0.1:11434")!
     nonisolated(unsafe) static var model = "qwen3:8b"
 
+    /// Ask Ollama to drop the model from memory. `keep_alive: 0` unloads it
+    /// immediately, giving back the ~6 GB it was holding. The server itself
+    /// stays running — idle it costs almost nothing, and stopping it would
+    /// break anything else on the Mac that uses Ollama.
+    ///
+    /// Deliberately NOT async: this is called from applicationWillTerminate,
+    /// where the main thread must block until it completes. An `async` version
+    /// deadlocks — the Task inherits the main actor, which is exactly what the
+    /// blocking wait is holding.
+    static func unloadBlocking(timeout: TimeInterval = 3) {
+        var req = URLRequest(url: base.appendingPathComponent("api/generate"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = timeout
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "model": model, "keep_alive": 0,
+        ])
+        let sem = DispatchSemaphore(value: 0)
+        // The completion handler runs on a URLSession queue, not the main
+        // thread, so signalling from here is safe.
+        URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
+        _ = sem.wait(timeout: .now() + timeout)
+    }
+
     static func isUp() async -> Bool {
         var r = URLRequest(url: base.appendingPathComponent("api/version"))
         r.timeoutInterval = 2

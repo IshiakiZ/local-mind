@@ -81,8 +81,31 @@ else
 fi
 
 echo
-echo "── Memory pressure ─────────────────────────────────"
-vm_stat | awk '/Pages free/{f=$3} /Pages active/{a=$3} /Pages wired/{w=$4} END{gsub(/\./,"",f);gsub(/\./,"",a);gsub(/\./,"",w); printf "  free %.1f GB · active %.1f GB · wired %.1f GB\n", f*16384/1e9, a*16384/1e9, w*16384/1e9}'
-sysctl vm.swapusage 2>/dev/null | sed 's/^/  /'
+echo "── Disk space ──────────────────────────────────────"
+AVAIL=$(df -g / | tail -1 | awk '{print $4}')
+echo "  ${AVAIL} GB free"
+if [ "$AVAIL" -lt 8 ]; then
+  bad "Not enough room. qwen3:8b needs about 6 GB, plus space for macOS to work."
+  echo "      Free some space, then: ollama pull qwen3:8b"
+elif [ "$AVAIL" -lt 20 ]; then
+  warn "Getting tight. macOS slows down badly below ~10 GB free."
+else
+  ok "plenty of room"
+fi
+
+echo
+echo "── Memory ──────────────────────────────────────────"
+# NOTE: do NOT report "pages free" — macOS uses nearly all RAM for cache, so
+# that number is ~0.1 GB even on a completely healthy Mac. It alarms people
+# for no reason. Memory PRESSURE is the number that actually means something.
+PCT=$(memory_pressure 2>/dev/null | awk -F: '/free percentage/{gsub(/[^0-9]/,"",$2); print $2}')
+if [ -n "$PCT" ]; then
+  echo "  ${PCT}% free by memory pressure"
+  if [ "$PCT" -lt 15 ]; then bad "Under real memory pressure — close some apps"
+  elif [ "$PCT" -lt 30 ]; then warn "Somewhat tight"
+  else ok "healthy"; fi
+fi
+SWAP=$(sysctl -n vm.swapusage 2>/dev/null | awk '{print $6}' | tr -d 'M')
+[ -n "$SWAP" ] && echo "  swap in use: ${SWAP}M"
 echo
 echo "Paste this whole output to whoever is helping you."
